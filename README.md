@@ -1,0 +1,211 @@
+# warp-claude-resume
+
+**Warp restores your panes after a restart, but the Claude Code sessions running
+in them are gone.** This brings each pane back to **its own** conversation — not
+"the newest one in this directory". Two panes open on the same repo come back to
+two different sessions.
+
+Two shell scripts, no build step, no dependencies beyond zsh. Warp has an open
+PR to do this natively ([#14956](https://github.com/warpdotdev/warp/pull/14956));
+until that merges, this fills the gap. If it ships, [uninstall](#uninstall) this
+and use the built-in version.
+
+## How it works
+
+Warp exports `WARP_TERMINAL_SESSION_UUID` into every local pane's shell. A
+**restored** pane comes back with the same value it had before the restart; a
+**new** pane gets a fresh random one.
+
+1. A Claude Code `SessionStart` hook records which session is running in which
+   pane, in `~/.warp-claude/panes/<pane-uuid>`.
+2. When a shell starts, a one-shot `precmd` hook looks for a record for *this*
+   pane. A restored pane finds one and is offered `claude --resume <that
+   session>`. A new pane, an SSH pane, or a non-Warp terminal finds nothing and
+   the shell starts normally.
+
+Because the record is written when a session *starts*, only sessions started
+(or resumed) after install are tracked. Existing panes catch up the first time
+you run `claude --resume` in them.
+
+## Requirements
+
+- **Warp** with *Restore windows, tabs, and panes on startup* enabled
+- **zsh** (Warp's default on macOS). bash and fish are not supported.
+- **Claude Code** with `SessionStart` hook support
+- macOS or Linux. WSL should work but is untested. Panes over SSH never resume.
+
+## Install
+
+```sh
+git clone https://github.com/supersistence/warp-claude-resume
+cd warp-claude-resume
+claude
+```
+
+Then tell Claude Code:
+
+> Read README.md and install this. Merge the hook into my existing
+> `~/.claude/settings.json` without overwriting other keys, and if I have a
+> `claude` alias with flags, mirror them in `WARP_CLAUDE_RESUME_FLAGS`.
+
+That's the whole install. The steps it performs are below — read them if you
+want to see exactly what touches your config, or to do it by hand.
+
+### Manual steps
+
+```sh
+bash test.sh          # optional, ~30s, touches nothing in $HOME
+mkdir -p ~/.warp-claude
+cp record-session.sh warp-claude.zsh ~/.warp-claude/
+chmod +x ~/.warp-claude/record-session.sh
+```
+
+Add the hook to `~/.claude/settings.json`, merging with any existing keys:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "$HOME/.warp-claude/record-session.sh" } ] }
+    ]
+  }
+}
+```
+
+Add to `~/.zshrc`, after your prompt framework and `PATH` setup:
+
+```sh
+source ~/.warp-claude/warp-claude.zsh
+```
+
+Optional knobs go on the lines *above* the `source`. These are off by default;
+uncomment deliberately — together they relaunch every restored pane with
+permissions bypassed and no prompt:
+
+```sh
+# WARP_CLAUDE_RESUME_FLAGS=(--permission-mode bypassPermissions)  # mirror your usual claude flags
+# WARP_CLAUDE_AUTO=1                                              # resume without asking
+```
+
+## Using it
+
+Open Claude in a pane as usual. After a Warp restart, the restored pane shows:
+
+```
+claude 8f0b1c2d  ~/src/my_app  bypassPermissions
+resume? [Y/n]
+```
+
+Enter resumes. The mode at the end appears only if you set
+`WARP_CLAUDE_RESUME_FLAGS`. With `WARP_CLAUDE_AUTO=1` there is no prompt. If
+there's no terminal to prompt on, it prints a one-line notice and does nothing.
+
+Shell commands:
+
+| Command | Does |
+|---|---|
+| `warp-claude-resume` | resume this pane now, ignoring the age limit (still prompts unless `AUTO=1`) |
+| `warp-claude-list` | show every recorded pane → session |
+| `warp-claude-forget` | drop this pane's record, stop offering |
+
+Variables, set in `.zshrc` before the `source` line:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WARP_CLAUDE_RESUME_FLAGS` | `()` | zsh **array** of flags passed on every resume. A plain string is rejected with a warning and ignored. |
+| `WARP_CLAUDE_AUTO` | `0` | `1` = resume without asking |
+| `WARP_CLAUDE_MAX_AGE` | `604800` | seconds. Don't offer if Claude last started or resumed in this pane longer ago than this (7 days). Resuming refreshes it. |
+| `WARP_CLAUDE_DISABLE` | `0` | `1` = off |
+| `WARP_CLAUDE_STATE_DIR` | `~/.warp-claude/panes` | where records are kept (never pruned) |
+
+**Permission mode.** Claude never restores `bypassPermissions` or `plan` when
+resuming — a session in either comes back in the default permission mode. If
+you always launch with a flag (e.g. `alias cc='claude --permission-mode
+bypassPermissions'`), put it in `WARP_CLAUDE_RESUME_FLAGS` so restored panes
+match. Your aliases are deliberately bypassed: the resume resolves the `claude`
+binary on `PATH` and calls it by absolute path, so an alias can't add flags the
+prompt didn't show you.
+
+`WARP_CLAUDE_MAX_AGE` only controls *offering*. Claude Code itself deletes
+transcripts after `cleanupPeriodDays` (default 30) — raise that in
+`~/.claude/settings.json` if you want sessions to live longer, and keep
+`WARP_CLAUDE_MAX_AGE` at or below it.
+
+## Caveats
+
+- `WARP_TERMINAL_SESSION_UUID` is undocumented by Warp — it's only in the Rust
+  source. If it changes, this degrades to silence, not breakage.
+- Only panes restored from Warp's snapshot keep their UUID. Panes from a Tab
+  Config or launch config, Warp's cloud agent panes, and SSH panes never resume.
+- `/clear` starts a new session; the pane follows whatever it last had.
+- Resuming `cd`s into the recorded directory, which fires `chpwd` hooks
+  (direnv, zoxide). With `AUTO=1` that happens without a prompt; tools that
+  require a per-directory allow are unaffected.
+- The control-character check assumes a UTF-8 locale (what Warp and Claude
+  Code use). Under `LANG=C` only ASCII controls are caught, and on Linux a
+  Unicode bidi-override character in a directory name is not caught at all, so
+  the path shown at the prompt could display reversed.
+- With `AUTO=1`, every recorded pane launches Claude the moment Warp opens, and
+  a long-idle large session may come back on Claude's own "Resume from
+  summary?" dialog rather than at a prompt.
+
+## Should I trust this?
+
+You're being asked to source a script at every shell start and let it launch
+`claude` with your permission flags. Skepticism is correct. What you can check
+yourself:
+
+- **Two files, meant to be read.** `record-session.sh` (~130 lines, POSIX sh,
+  runs inside Claude Code's hook, writes one file). `warp-claude.zsh` (~230
+  lines, runs in your shell, reads that file). No network, no `sudo`, no
+  `eval` of anything but `shlex.quote`d output, nothing deleted automatically.
+- **It touches exactly three things:** `~/.warp-claude/`, one hook entry in
+  `~/.claude/settings.json`, and lines you add to `~/.zshrc`.
+- **`bash test.sh`** — 61 checks in a temp dir that never touches `$HOME`,
+  including the attacks below (record tampering, flag injection, `$(…)` in a
+  directory name under `PROMPT_SUBST`, alias and `PATH` substitution).
+- **`shellcheck -s sh --enable=all record-session.sh`** — clean, no warnings.
+- Before publishing, the scripts went through two rounds of independent
+  adversarial review that executed attacks rather than reading for them.
+  Everything it found is fixed and has a regression test.
+
+## Security notes
+
+The record file can't inject flags or run code, even if something else on your
+machine tampers with it. Everything in it is validated before use:
+
+- The session id must be `[0-9a-zA-Z_-]{1,64}` and not start with `-`; the
+  pane UUID must be bare hex; the directory must be absolute with no control
+  characters. Anything else is silently ignored.
+- The directory is printed literally (`print -r`), never through prompt
+  expansion, so a directory named `$(…)` can't execute at shell startup.
+- `cd` happens only after you accept; declining leaves your shell where it was.
+- Resume flags come only from your own `WARP_CLAUDE_RESUME_FLAGS`, never from
+  the record. `claude` is resolved via zsh's `$commands` table to an absolute
+  path *before* the `cd`, and `builtin cd` is used, so a shell function, an
+  alias carrying flags, or a `claude` executable inside the recorded directory
+  (with `.` in `PATH`) can't be substituted. (Your own `.zshrc` can, of course —
+  an alias to a bare absolute path is honoured, since that's how Claude Code's
+  local installer defines it.)
+- `warp-claude-list` shows control characters escaped rather than raw.
+- Nothing is deleted automatically. Records are ~100 bytes each and are never
+  pruned; `warp-claude-forget` removes one on request, and
+  `rm -rf ~/.warp-claude/panes` is the full reset.
+- Records hold a session id, a directory, a timestamp, and (when Claude emits
+  it) a permission mode — no conversation content. Dir is `0700`, files `0600`.
+
+## Uninstall
+
+Nothing here touches Warp's own files or database. To disable instantly, add
+`WARP_CLAUDE_DISABLE=1` above the `source` line. To remove:
+
+1. Delete the `WARP_CLAUDE_*` and `source` lines from `~/.zshrc`.
+2. Remove the `SessionStart` entry from `~/.claude/settings.json` (check it's
+   still valid JSON: `jq . ~/.claude/settings.json`).
+3. `rm -rf ~/.warp-claude`
+
+Your conversations live in `~/.claude/projects/` and are unaffected.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
