@@ -28,6 +28,13 @@ export ZDOTDIR="$T/zdot"; mkdir -p "$ZDOTDIR"; : > "$ZDOTDIR/.zshrc"
 # resumed claude session inherits WARP_CLAUDE_ACTIVE=1, which (correctly)
 # makes every reattach a silent no-op.
 unset WARP_CLAUDE_ACTIVE WARP_CLAUDE_RAN WARP_CLAUDE_AUTO WARP_CLAUDE_DISABLE
+# macOS Terminal.app: /etc/zshrc sources /etc/zshrc_Apple_Terminal (ZDOTDIR
+# does not stop that), which prints "Restored session: ..." on start and
+# "Saving session..." on exit of every interactive zsh -- breaking every
+# "prints nothing" check. SHELL_SESSIONS_DISABLE is Apple's off switch;
+# dropping TERM_PROGRAM keeps that file from loading at all.
+export SHELL_SESSIONS_DISABLE=1
+unset TERM_PROGRAM TERM_SESSION_ID
 BIN="$T/bin"; mkdir -p "$BIN"
 cat > "$BIN/claude" <<'EOF'
 #!/bin/sh
@@ -276,6 +283,60 @@ o=$(zrun "$PANE1" "WARP_CLAUDE_DISABLE=1; WARP_CLAUDE_AUTO=1
 source '$ZSHLIB'")
 : # DISABLE is checked at the top-level guard, exercised via the pty test below
 
+# ---------------------------------------------------------------- details
+# The resume prompt shows the session's title, age and last message, read
+# from Claude Code's transcript. That transcript is untrusted text.
+echo; echo "details (transcript summary under the prompt)"
+TX="$T/transcripts"; mkdir -p "$TX/-proj"
+python3 - "$TX/-proj/sess-0001.jsonl" "$T" <<'PYEOF'
+import json, sys
+t = sys.argv[2]
+rows = [
+  {"type": "summary", "summary": "Generated summary", "leafUuid": "x"},
+  {"type": "user", "message": {"role": "user", "content": "<command-name>/clear</command-name>"}},
+  {"type": "user", "isMeta": True, "message": {"role": "user", "content": "META-SHOULD-NOT-SHOW"}},
+  {"type": "user", "message": {"role": "user", "content": "Draft the methods\nsection"}},
+  {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "TOOLRESULT-SHOULD-NOT-SHOW"}]}},
+  {"type": "user", "message": {"role": "user", "content": [{"type": "text",
+     # %F{1} goes first: the message is truncated at 90 chars and $t (the
+     # temp dir) is long on macOS, so anything after it would be cut off.
+     "text": "tighten the table %F{1}red \u001b[2J\u001b]0;PWNED\u0007 \u202egnp $(touch " + t + "/CANARY3)"}]}},
+  {"type": "custom-title", "customTitle": "Methods draft", "sessionId": "sess-0001"},
+]
+with open(sys.argv[1], "w") as f:
+    for r in rows: f.write(json.dumps(r) + "\n")
+    f.write("{not json\n")
+PYEOF
+dz() { zsh -c "setopt prompt_subst; WARP_CLAUDE_TRANSCRIPT_DIR='$TX'; ${2-}
+source '$ZSHLIB'; _warp_claude_details '$1'" </dev/null 2>&1; }
+o=$(dz sess-0001)
+has   "custom title (/rename) is shown" "$o" "Methods draft"
+has   "prompt count counts only typed prompts" "$o" "2 prompts"
+has   "last typed message is shown" "$o" "last:"
+has   "…with its text" "$o" "tighten the table"
+hasnt "slash-command noise is skipped" "$o" "command-name"
+hasnt "isMeta messages are skipped" "$o" "META-SHOULD-NOT-SHOW"
+hasnt "tool results are skipped" "$o" "TOOLRESULT-SHOULD-NOT-SHOW"
+hasnt "no ESC from transcript reaches the terminal" "$o" $'\e[2J'
+hasnt "no OSC title-set from transcript" "$o" $'\e]0;'
+hasnt "no BEL from transcript" "$o" $'\a'
+hasnt "no bidi override from transcript" "$o" $'‮'
+has   "%-escapes in transcript are printed literally, not expanded" "$o" "%F{1}red"
+[ -f "$T/CANARY3" ] && no "no command execution via transcript + PROMPT_SUBST" "no canary" "CANARY3 CREATED" \
+                    || ok "no command execution via transcript + PROMPT_SUBST"
+o=$(dz sess-0001 "setopt ksh_arrays nounset sh_word_split")
+has   "details work under ksh_arrays/nounset/sh_word_split" "$o" "Methods draft"
+o=$(dz no-such-session)
+is    "no transcript prints nothing" "$o" ""
+o=$(dz '../../etc' )
+is    "path-shaped id prints nothing" "$o" ""
+printf '{"type":"user","message":{"content":"only one"}}\n' > "$TX/-proj/sess-0002.jsonl"
+o=$(dz sess-0002)
+has   "no title falls back to first prompt" "$o" "only one"
+hasnt "last line omitted when it equals the title" "$o" "last:"
+o=$(dz sess-0002 "export PATH='$NOPY'")
+has   "without working python3, still shows age and size" "$o" "1 KB"
+
 # ---------------------------------------------------------------- pty tests
 echo; echo "interactive (pty)"
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import pty' 2>/dev/null; then
@@ -354,6 +415,20 @@ source '$ZSHLIB'"
   o=$(python3 "$T/ptyh.py" "$T/rcD/.zshrc" "$(printf 'n\n')" 2>&1)
   has "prompt is shown" "$o" "resume?"
   hasnt "answering n does not launch claude" "$o" "CLAUDE argc"
+
+  mkrc E "$BASE
+WARP_CLAUDE_TRANSCRIPT_DIR='$TX'
+source '$ZSHLIB'"
+  o=$(python3 "$T/ptyh.py" "$T/rcE/.zshrc" "$(printf 'n\n')" 2>&1)
+  has "prompt shows the session title" "$o" "Methods draft"
+  has "prompt shows the last message" "$o" "tighten the table"
+  mkrc F "$BASE
+WARP_CLAUDE_TRANSCRIPT_DIR='$TX'
+WARP_CLAUDE_DETAILS=0
+source '$ZSHLIB'"
+  o=$(python3 "$T/ptyh.py" "$T/rcF/.zshrc" "$(printf 'n\n')" 2>&1)
+  hasnt "WARP_CLAUDE_DETAILS=0 hides details" "$o" "Methods draft"
+  has   "…but still prompts" "$o" "resume?"
 
   o=$(python3 "$T/ptyh.py" "$T/rcD/.zshrc" "$(printf '\n')" 2>&1)
   has "bare enter accepts" "$o" "CLAUDE argc"

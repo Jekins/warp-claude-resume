@@ -5,10 +5,11 @@ in them are gone.** This brings each pane back to **its own** conversation — n
 "the newest one in this directory". Two panes open on the same repo come back to
 two different sessions.
 
-Two shell scripts, no build step, no dependencies beyond zsh. Warp has an open
-PR to do this natively ([#14956](https://github.com/warpdotdev/warp/pull/14956));
-until that merges, this fills the gap. If it ships, [uninstall](#uninstall) this
-and use the built-in version.
+Two shell scripts, no build step, no dependencies beyond zsh (`python3`,
+if present, adds session titles to the prompt). Warp doesn't do this
+natively; a PR that tried ([#14956](https://github.com/warpdotdev/warp/pull/14956))
+was closed unmerged in Sep 2026. If Warp ships it, [uninstall](#uninstall)
+this and use the built-in version.
 
 ## How it works
 
@@ -93,12 +94,27 @@ Open Claude in a pane as usual. After a Warp restart, the restored pane shows:
 
 ```
 claude 8f0b1c2d  ~/src/my_app  bypassPermissions
+  Refactor auth middleware  2d ago · 3.1 MB · 41 prompts
+  last: can you add a test for the expired-token path
 resume? [Y/n]
 ```
 
 Enter resumes. The mode at the end appears only if you set
-`WARP_CLAUDE_RESUME_FLAGS`. With `WARP_CLAUDE_AUTO=1` there is no prompt. If
-there's no terminal to prompt on, it prints a one-line notice and does nothing.
+`WARP_CLAUDE_RESUME_FLAGS`.
+
+The indented lines are read from Claude Code's own transcript for that
+session, so you can tell panes apart: the title (your `/rename`, else Claude's
+generated summary, else your first message), when the session was last active,
+the transcript's size, how many messages you typed, and the last one. Slash
+commands, tool output and system messages are skipped. The transcript is
+treated as untrusted text: control characters, terminal escapes and bidi
+overrides are stripped before anything is printed. Needs `python3` for the
+title and messages; without it only the age and size are shown. If there's no
+transcript (deleted, or older than `cleanupPeriodDays`) the lines are simply
+omitted. Set `WARP_CLAUDE_DETAILS=0` to turn them off.
+
+With `WARP_CLAUDE_AUTO=1` there is no prompt. If there's no terminal to prompt
+on, it prints a one-line notice and does nothing.
 
 Shell commands:
 
@@ -116,6 +132,8 @@ Variables, set in `.zshrc` before the `source` line:
 | `WARP_CLAUDE_AUTO` | `0` | `1` = resume without asking |
 | `WARP_CLAUDE_MAX_AGE` | `604800` | seconds. Don't offer if Claude last started or resumed in this pane longer ago than this (7 days). Resuming refreshes it. |
 | `WARP_CLAUDE_DISABLE` | `0` | `1` = off |
+| `WARP_CLAUDE_DETAILS` | `1` | `0` = don't show the session's title, age and last message under the prompt |
+| `WARP_CLAUDE_TRANSCRIPT_DIR` | `${CLAUDE_CONFIG_DIR:-~/.claude}/projects` | where to find Claude Code transcripts for those details |
 | `WARP_CLAUDE_STATE_DIR` | `~/.warp-claude/panes` | where records are kept (never pruned) |
 
 **Permission mode.** Claude never restores `bypassPermissions` or `plan` when
@@ -133,8 +151,10 @@ transcripts after `cleanupPeriodDays` (default 30) — raise that in
 
 ## Caveats
 
-- `WARP_TERMINAL_SESSION_UUID` is undocumented by Warp — it's only in the Rust
-  source. If it changes, this degrades to silence, not breakage.
+- `WARP_TERMINAL_SESSION_UUID` is exported on purpose for external tools
+  ([warp#11130](https://github.com/warpdotdev/warp/pull/11130), May 2026) but
+  isn't on docs.warp.dev yet. If Warp renames or drops it, panes simply stop
+  being offered a resume; nothing errors.
 - Only panes restored from Warp's snapshot keep their UUID. Panes from a Tab
   Config or launch config, Warp's cloud agent panes, and SSH panes never resume.
 - `/clear` starts a new session; the pane follows whatever it last had.
@@ -156,14 +176,17 @@ You're being asked to source a script at every shell start and let it launch
 yourself:
 
 - **Two files, meant to be read.** `record-session.sh` (~130 lines, POSIX sh,
-  runs inside Claude Code's hook, writes one file). `warp-claude.zsh` (~230
-  lines, runs in your shell, reads that file). No network, no `sudo`, no
+  runs inside Claude Code's hook, writes one file). `warp-claude.zsh` (~410
+  lines, runs in your shell, reads that file and, for the prompt details,
+  the session's transcript). No network, no `sudo`, no
   `eval` of anything but `shlex.quote`d output, nothing deleted automatically.
-- **It touches exactly three things:** `~/.warp-claude/`, one hook entry in
-  `~/.claude/settings.json`, and lines you add to `~/.zshrc`.
-- **`bash test.sh`** — 61 checks in a temp dir that never touches `$HOME`,
+- **It writes exactly three things:** `~/.warp-claude/`, one hook entry in
+  `~/.claude/settings.json`, and lines you add to `~/.zshrc`. It reads one
+  more: the transcript in `~/.claude/projects/` for the session it offers.
+- **`bash test.sh`** — 84 checks in a temp dir that never touches `$HOME`,
   including the attacks below (record tampering, flag injection, `$(…)` in a
-  directory name under `PROMPT_SUBST`, alias and `PATH` substitution).
+  directory name or transcript under `PROMPT_SUBST`, terminal escapes in a
+  transcript, alias and `PATH` substitution).
 - **`shellcheck -s sh --enable=all record-session.sh`** — clean, no warnings.
 - Before publishing, the scripts went through two rounds of independent
   adversarial review that executed attacks rather than reading for them.
@@ -187,6 +210,11 @@ machine tampers with it. Everything in it is validated before use:
   (with `.` in `PATH`) can't be substituted. (Your own `.zshrc` can, of course —
   an alias to a bare absolute path is honoured, since that's how Claude Code's
   local installer defines it.)
+- The transcript is read, never executed. Only text you typed and titles
+  are extracted, by a fixed python3 script fed the file path as an argument;
+  every Unicode control and format character is dropped, fields are
+  truncated, and the result is printed literally. Without `python3` no
+  transcript content is shown at all.
 - `warp-claude-list` shows control characters escaped rather than raw.
 - Nothing is deleted automatically. Records are ~100 bytes each and are never
   pruned; `warp-claude-forget` removes one on request, and

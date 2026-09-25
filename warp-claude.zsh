@@ -26,6 +26,11 @@
 #   WARP_CLAUDE_MAX_AGE   seconds; ignore records older than this. Default 7d.
 #   WARP_CLAUDE_AUTO      1 = resume without asking. Default 0 (prompt).
 #   WARP_CLAUDE_DISABLE   1 = turn the whole thing off.
+#   WARP_CLAUDE_DETAILS   1 = under the prompt, show the session's title,
+#         when it was last used, its size and your last message, read from
+#         Claude Code's own transcript. Default 1. 0 = id and path only.
+#   WARP_CLAUDE_TRANSCRIPT_DIR   where Claude Code keeps transcripts.
+#         Default ${CLAUDE_CONFIG_DIR:-~/.claude}/projects.
 # ---------------------------------------------------------------------------
 
 # Exported so the SessionStart hook writes where this reads. Without the
@@ -37,6 +42,8 @@ export WARP_CLAUDE_STATE_DIR
 : ${WARP_CLAUDE_MAX_AGE:=604800}
 : ${WARP_CLAUDE_AUTO:=0}
 : ${WARP_CLAUDE_DISABLE:=0}
+: ${WARP_CLAUDE_DETAILS:=1}
+: "${WARP_CLAUDE_TRANSCRIPT_DIR:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 
 # Accept an array; reject a scalar loudly rather than silently discarding it,
 # which is what `typeset -ga` would do to WARP_CLAUDE_RESUME_FLAGS="...".
@@ -78,6 +85,181 @@ warp-claude-forget() {
   local pane=${WARP_TERMINAL_SESSION_UUID:-}
   [[ -n $pane && -z ${pane//[0-9a-fA-F]/} ]] || { print -- "not a Warp pane"; return 1; }
   rm -f -- "$WARP_CLAUDE_STATE_DIR/$pane" && print -- "forgotten"
+}
+
+# Print what a session was about, under the resume prompt:
+#     "Draft methods section" · 2d ago · 3.1 MB · 41 prompts
+#     last: can you tighten the county comparison table…
+# Everything shown comes from the transcript, which is UNTRUSTED text (it holds
+# pasted content, tool output, anything). python3 strips every control/format
+# character and the field separator before zsh sees it; zsh then prints it
+# with print -r and (V) only, never through print -P. Any failure -- no
+# transcript, no python3, unreadable file -- prints nothing: details are a
+# convenience and must never block or clutter the prompt.
+_warp_claude_details() {
+  emulate -L zsh
+  setopt localoptions no_nomatch
+  zmodload -F zsh/datetime +p:EPOCHSECONDS 2>/dev/null
+  local sid=$1
+  # Re-check: this function is callable on its own, and sid becomes part of a
+  # glob pattern below.
+  [[ -n $sid && -z ${sid//[0-9a-zA-Z_-]/} && ${#sid} -le 64 ]] || return 0
+  local dir=$WARP_CLAUDE_TRANSCRIPT_DIR
+  [[ $dir == /* && -d $dir ]] || return 0
+
+  # $dir is not glob-substituted (emulate zsh), so only the * is a pattern.
+  # Newest first if the same id somehow exists in two project folders.
+  # Built as a string and expanded with ${~...}: a literal (N.om) qualifier
+  # is a parse error when this file is sourced under `emulate sh`. (b) quotes
+  # any pattern characters in $dir, so only the * and the qualifier are live.
+  local -a files
+  local pat="${(b)dir}/*/${sid}.jsonl(N.om)"
+  files=( ${~pat} )
+  (( ${#files} )) || return 0
+  local f=$files[1]
+  [[ -r $f ]] || return 0
+
+  # mtime + size from zsh itself, so "last used" works even without python3.
+  # zstat takes only one +element per call, so fetch the whole hash.
+  local -A st
+  zmodload -F zsh/stat b:zstat 2>/dev/null
+  zstat -H st -- $f 2>/dev/null || st=()
+
+  local ago= size=
+  if [[ ${st[mtime]-} == <-> && ${st[size]-} == <-> ]]; then
+    local now=${EPOCHSECONDS:-$(date +%s)} d
+    (( d = now - st[mtime] )); (( d < 0 )) && d=0
+    if   (( d < 60 ));      then ago="just now"
+    elif (( d < 3600 ));    then ago="$(( d / 60 ))m ago"
+    elif (( d < 86400 ));   then ago="$(( d / 3600 ))h ago"
+    elif (( d < 1209600 )); then ago="$(( d / 86400 ))d ago"
+    else                         ago="$(( d / 604800 ))w ago"
+    fi
+    if (( st[size] < 1048576 )); then size="$(( (st[size] + 1023) / 1024 )) KB"
+    else size=$(LC_ALL=C printf '%.1f MB' $(( st[size] / 1048576.0 ))); fi
+  fi
+
+  # title, first prompt, last prompt, prompt count; joined by \x1f, which the
+  # python side guarantees cannot occur inside a field. \x1f is not IFS
+  # whitespace, so empty fields survive the split (a tab separator would
+  # collapse them).
+  local raw= title= first= last= count=
+  if [[ -n ${commands[python3]:-} ]]; then
+    raw=$(python3 - "$f" 2>/dev/null <<'PY'
+import sys, json, unicodedata
+
+def clean(s, n):
+    # Drop every Unicode control/format/private/unassigned char (Cc Cf Co Cn
+    # Cs): terminal escapes, bidi overrides, zero-width tricks. Whitespace
+    # runs (incl. newlines) collapse to one space.
+    out = []
+    for ch in s:
+        if ch.isspace():
+            out.append(" ")
+        elif unicodedata.category(ch)[0] != "C":
+            out.append(ch)
+    s = " ".join("".join(out).split())
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+def text_of(msg):
+    c = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = []
+        for it in c:
+            if not isinstance(it, dict):
+                continue
+            if it.get("type") == "tool_result":
+                return ""          # a tool result, not something you typed
+            if it.get("type") == "text" and isinstance(it.get("text"), str):
+                parts.append(it["text"])
+        return " ".join(parts)
+    return ""
+
+def typed(t):
+    t = t.strip()
+    if not t:
+        return False
+    # Slash commands, their output, hook/system injections, interrupts.
+    if t.startswith("<") or t.startswith("Caveat:") or t.startswith("[Request interrupted"):
+        return False
+    return True
+
+title = summary = first = last = ""
+count = 0
+try:
+    with open(sys.argv[1], "rb") as fh:
+        for raw in fh:
+            # Cheap pre-filter; most lines are assistant/tool traffic.
+            if (b'"user"' not in raw and b'itle"' not in raw
+                    and b'"summary"' not in raw):
+                continue
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            ty = d.get("type")
+            if isinstance(ty, str) and ty.endswith("title"):
+                for k in ("customTitle", "aiTitle", "title"):
+                    v = d.get(k)
+                    if isinstance(v, str) and v.strip():
+                        # /rename (custom) beats a generated title; latest wins.
+                        if k == "customTitle" or not title.startswith("\0c"):
+                            title = ("\0c" if k == "customTitle" else "") + v
+                        break
+            elif ty == "summary" and isinstance(d.get("summary"), str):
+                summary = d["summary"]
+            elif ty == "user":
+                if d.get("isMeta") or d.get("isSidechain") or d.get("isCompactSummary"):
+                    continue
+                t = text_of(d.get("message"))
+                if typed(t):
+                    count += 1
+                    if not first:
+                        first = t
+                    last = t
+except Exception:
+    sys.exit(0)
+
+title = title[2:] if title.startswith("\0c") else title
+shown = title or summary or first
+fields = [clean(shown, 72), clean(first, 90), clean(last, 90), str(count)]
+sys.stdout.write("\x1f".join(f.replace("\x1f", " ") for f in fields))
+PY
+)
+    local -a parts
+    local sep=$'\x1f'
+    parts=( "${(@ps:$sep:)raw}" )
+    if (( ${#parts} == 4 )); then
+      title=$parts[1] first=$parts[2] last=$parts[3] count=$parts[4]
+      [[ $count == <-> ]] || count=
+    fi
+  fi
+
+  [[ -n $title || -n $ago ]] || return 0
+
+  # Line 1: title · age · size · prompts. Colours via -P on constant strings
+  # only; data via -r with (V) as a second guard.
+  local -a meta
+  [[ -n $ago ]] && meta+=( $ago )
+  [[ -n $size ]] && meta+=( $size )
+  [[ -n $count && $count != 0 ]] && meta+=( "$count prompt${${count:#1}:+s}" )
+  print -rn -- "  "
+  if [[ -n $title ]]; then
+    print -Pn "%B"; print -rn -- "${(V)title}"; print -Pn "%b"
+    (( ${#meta} )) && print -rn -- "  "
+  fi
+  print -Pn "%F{8}"; print -rn -- "${(j: · :)meta}"; print -Pn "%f"
+  print
+
+  # Line 2: the last thing you typed, if it adds anything over the title.
+  if [[ -n $last && $last != $title ]]; then
+    print -Pn "  %F{8}last:%f "; print -r -- "${(V)last}"
+  fi
+  return 0
 }
 
 _warp_claude_reattach() {
@@ -162,6 +344,9 @@ _warp_claude_reattach() {
       print -Pn "%f"
     fi
     print
+
+    # Title, age and last message, so you can tell panes apart. Best effort.
+    [[ $WARP_CLAUDE_DETAILS == 1 ]] && _warp_claude_details "$sid"
 
     local ans
     printf 'resume? [Y/n] '

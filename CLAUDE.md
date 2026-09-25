@@ -13,14 +13,14 @@ test. Read the comment before changing the code.
 |---|---|
 | `record-session.sh` | Claude Code `SessionStart` hook. POSIX sh. Writes a pane→session record. |
 | `warp-claude.zsh` | Sourced from `.zshrc`. Registers a one-shot `precmd` hook that offers to resume. |
-| `test.sh` | Regression suite. 61 checks. Run after every edit. |
+| `test.sh` | Regression suite. 84 checks. Run after every edit. |
 | `README.md` | User-facing docs |
 | `LICENSE` | MIT |
 
 ## Working on this
 
 ```sh
-bash test.sh        # must be 61/61 before and after any change
+bash test.sh        # must be 84/84 (83 + 1 skip when run as root) before and after any change
 ```
 
 The suite runs in a temp directory with a stubbed `claude` and touches nothing
@@ -34,11 +34,20 @@ point — if one starts failing, read the comment above it before "fixing" the t
   not available. No `[[`, no `local`, no arrays.
 - `warp-claude.zsh` runs inside the user's interactive shell. It must be silent
   and side-effect-free unless a record for the current pane exists.
-- Untrusted data (`cwd` from the hook payload, anything in a record file) must
-  never reach `print -P`, `eval`, or an unquoted command line.
+- Untrusted data (`cwd` from the hook payload, anything in a record file, and
+  anything read from a Claude Code transcript) must never reach `print -P`,
+  `eval`, or an unquoted command line.
+- `_warp_claude_details` reads transcripts via python3, which strips all
+  Unicode control/format characters. It must stay best-effort: any failure
+  prints nothing and never blocks the prompt.
 
 ## Status
 
 Verified on macOS (Aug 24 2026): 43/43 on zsh 5.9 / Darwin 25, and a real
 end-to-end Warp restart resumed the right session, with both prompt and
-`WARP_CLAUDE_AUTO=1` modes. No open items.
+`WARP_CLAUDE_AUTO=1` modes.
+
+Sep 25 2026: added session details under the prompt (`WARP_CLAUDE_DETAILS`).
+Suite 83/83 + 1 root skip on zsh 5.9 / Linux, and 84/84 on macOS (zsh 5.9 /
+Darwin 27). A real Warp restart on macOS showed the details lines and resumed
+the right session. No open items.
