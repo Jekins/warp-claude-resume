@@ -238,7 +238,7 @@ class Store:
             except (OSError, ValueError):
                 continue
 
-    def restore_command(self, pane, binary, flags=()):
+    def restore_command(self, pane, binary, flags=(), prepare=True):
         if not Path(binary).is_absolute() or not os.access(binary, os.X_OK):
             raise ValueError("Claude executable must be an executable absolute path")
         binding = read_json(self.metadata_path(pane))
@@ -252,10 +252,20 @@ class Store:
                 raise ValueError("Invalid legacy record")
         if not Path(binding["cwd"]).is_dir():
             raise ValueError("The recorded working directory no longer exists")
-        transcript = self.ensure_transcript(binding)
+        if prepare:
+            transcript = self.ensure_transcript(binding)
+        else:
+            transcript = self.find_transcript(binding["session_id"])
+            if transcript is None:
+                manifest = read_json(self.archive / binding["session_id"] / "manifest.json")
+                candidate = self.archive / binding["session_id"] / "transcript.jsonl"
+                if (manifest and manifest.get("session_id") == binding["session_id"]
+                        and candidate.is_file() and not candidate.is_symlink()):
+                    transcript = candidate
         if transcript is None:
             raise ValueError("The transcript is missing and no protected copy exists")
-        if binding["mode"] == "attach":
+        if (binding["mode"] == "attach"
+                and read_json(self.config / "jobs" / binding["job_id"] / "state.json")):
             # The native attach command reuses a live worker and can restart an
             # exited job, preserving its existing launch configuration.
             return binding, [binary, "attach", binding["job_id"]]
@@ -267,6 +277,8 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("hook")
     commands.add_parser("maintain")
+    plan = commands.add_parser("plan")
+    plan.add_argument("--binary", required=True)
     restore = commands.add_parser("restore")
     restore.add_argument("--pane", required=True)
     restore.add_argument("--binary", required=True)
@@ -293,6 +305,13 @@ def main():
         store.record_event(pane, payload, background=background)
     elif args.command == "maintain":
         store.maintain()
+    elif args.command == "plan":
+        rows = []
+        for candidate in store.bindings():
+            binding, command = store.restore_command(candidate["pane"], args.binary, prepare=False)
+            rows.append({"pane": binding["pane"], "session_id": binding["session_id"],
+                         "cwd": binding["cwd"], "command": command})
+        print(json.dumps(rows, indent=2))
     elif args.command == "bind":
         store.bind(args.pane, args.session, args.cwd, "attach" if args.job else "resume", args.job, "verified-import")
     elif args.command == "restore":

@@ -83,6 +83,28 @@ class PersistenceTests(PersistenceFixture, unittest.TestCase):
         _, command = self.store.restore_command(PANE1, str(self.binary), ["--permission-mode", "plan"])
         self.assertEqual(command, [str(self.binary), "--permission-mode", "plan", "--resume", SID1])
 
+    def test_missing_background_job_falls_back_to_exact_protected_conversation(self):
+        self.transcript()
+        self.bind(job="aabbccdd")
+        _, command = self.store.restore_command(PANE1, str(self.binary))
+        self.assertEqual(command, [str(self.binary), "--resume", SID1])
+
+    def test_plan_does_not_modify_the_original_transcript(self):
+        source = self.transcript()
+        self.bind()
+        before = source.stat().st_mtime_ns
+        _, command = self.store.restore_command(PANE1, str(self.binary), prepare=False)
+        self.assertEqual(source.stat().st_mtime_ns, before)
+        self.assertEqual(command[-1], SID1)
+
+    def test_plan_can_validate_archived_session_without_restoring_it(self):
+        source = self.transcript()
+        self.bind()
+        source.unlink()
+        _, command = self.store.restore_command(PANE1, str(self.binary), prepare=False)
+        self.assertEqual(command[-1], SID1)
+        self.assertFalse(source.exists())
+
     def test_two_panes_in_same_directory_keep_distinct_sessions(self):
         self.transcript(SID1)
         self.transcript(SID2)

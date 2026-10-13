@@ -29,6 +29,15 @@ bash test.sh
 python3 -m unittest discover -s tests -v
 ```
 
+Inspect saved restore commands without launching agents or modifying transcripts:
+
+```sh
+python3 ~/.warp-claude/session_store.py plan --binary "$(command -v claude)"
+```
+
+If an old background job's registry has been removed, the fork falls back to
+resuming its exact protected conversation ID instead of selecting another job.
+
 Existing foreground sessions can be imported from Claude's process metadata.
 Already running native background clients need a verified initial mapping
 between their display pane and job. Their inherited environment is not evidence
