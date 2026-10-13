@@ -140,6 +140,41 @@ class PersistenceTests(PersistenceFixture, unittest.TestCase):
         self.store.maintain()
         self.assertEqual(read_json(self.store.metadata_path(PANE1))["session_id"], SID2)
 
+    def test_maintenance_does_not_replace_worktree_with_dispatch_directory(self):
+        self.transcript()
+        self.job()
+        worktree = self.cwd / "worktree"
+        worktree.mkdir()
+        self.store.bind(PANE1, SID1, str(worktree), "attach", "aabbccdd")
+        self.store.maintain()
+        self.assertEqual(read_json(self.store.metadata_path(PANE1))["cwd"], str(worktree))
+
+    def test_maintenance_uses_verified_live_background_worktree(self):
+        self.transcript()
+        self.job()
+        self.bind(job="aabbccdd")
+        worktree = self.cwd / "worktree"
+        worktree.mkdir()
+        sessions = self.config / "sessions"
+        sessions.mkdir()
+        (sessions / (str(os.getpid()) + ".json")).write_text(json.dumps({
+            "kind": "bg", "jobId": "aabbccdd", "sessionId": SID1,
+            "pid": os.getpid(), "cwd": str(worktree)}))
+        self.store.maintain()
+        self.assertEqual(read_json(self.store.metadata_path(PANE1))["cwd"], str(worktree))
+
+    def test_maintenance_ignores_dead_background_metadata(self):
+        self.transcript()
+        self.job()
+        self.bind(job="aabbccdd")
+        sessions = self.config / "sessions"
+        sessions.mkdir()
+        (sessions / "2147483647.json").write_text(json.dumps({
+            "kind": "bg", "jobId": "aabbccdd", "sessionId": SID1,
+            "pid": 2147483647, "cwd": "/wrong-directory"}))
+        self.store.maintain()
+        self.assertEqual(read_json(self.store.metadata_path(PANE1))["cwd"], str(self.cwd))
+
     def test_maintain_refreshes_archive_after_messages_are_appended(self):
         source = self.transcript()
         self.bind()

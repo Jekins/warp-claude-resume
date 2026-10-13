@@ -212,13 +212,30 @@ class Store:
 
     def maintain(self):
         protected = set()
+        live_background = {}
+        for path in (self.config / "sessions").glob("*.json"):
+            data = read_json(path)
+            if (not data or data.get("kind") != "bg"
+                    or not isinstance(data.get("pid"), int) or data["pid"] <= 0
+                    or not JOB.fullmatch(str(data.get("jobId", "")))
+                    or not isinstance(data.get("sessionId"), str)
+                    or not SESSION.fullmatch(data["sessionId"]) or not valid_path(data.get("cwd"))):
+                continue
+            try:
+                os.kill(data["pid"], 0)
+            except OSError:
+                continue
+            live_background[(data["jobId"], data["sessionId"])] = data
         for binding in self.bindings():
             try:
                 if binding["mode"] == "attach":
                     job = read_json(self.config / "jobs" / binding["job_id"] / "state.json")
                     if job:
                         sid = job.get("resumeSessionId") or job.get("sessionId")
-                        cwd = job.get("cwd")
+                        # Job state retains the dispatch directory. The live
+                        # conversation may have moved to a worktree afterward.
+                        live = live_background.get((binding["job_id"], sid))
+                        cwd = live["cwd"] if live else binding["cwd"]
                         if isinstance(sid, str) and SESSION.fullmatch(sid) and valid_path(cwd):
                             binding = self.bind(binding["pane"], sid, cwd, "attach", binding["job_id"], binding["origin"])
                 self.protect(binding)
