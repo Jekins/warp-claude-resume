@@ -18,6 +18,19 @@
 # /bin/sh is dash on many Linux systems, which rejects `set -o pipefail`.
 set -u
 
+# The fork uses strict JSON parsing and protects archived transcripts when
+# Python is available. Retain the upstream fallback for minimal environments.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+if [ -f "$script_dir/session_store.py" ] && python3 -c 'import json, pathlib' >/dev/null 2>&1; then
+  exec python3 "$script_dir/session_store.py" hook
+fi
+
+# A background process's terminal UUID belongs to its launcher, not necessarily
+# the pane currently displaying it. Never overwrite that pane in fallback mode.
+if [ -n "${CLAUDE_JOB_DIR:-}${CLAUDE_BG_BACKEND:-}" ]; then
+  exit 0
+fi
+
 STATE_DIR="${WARP_CLAUDE_STATE_DIR:-$HOME/.warp-claude/panes}"
 
 pane="${WARP_TERMINAL_SESSION_UUID:-}"

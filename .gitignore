@@ -3,3 +3,6 @@
 panes/
 comment-14960.md
 HANDOFF.md
+build/
+__pycache__/
+*.pyc

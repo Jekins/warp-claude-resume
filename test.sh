@@ -28,6 +28,9 @@ export ZDOTDIR="$T/zdot"; mkdir -p "$ZDOTDIR"; : > "$ZDOTDIR/.zshrc"
 # resumed claude session inherits WARP_CLAUDE_ACTIVE=1, which (correctly)
 # makes every reattach a silent no-op.
 unset WARP_CLAUDE_ACTIVE WARP_CLAUDE_RAN WARP_CLAUDE_AUTO WARP_CLAUDE_DISABLE
+# Exercise the upstream compatibility path independently of any installed fork.
+export WARP_CLAUDE_HELPER=/nonexistent
+export WARP_CLAUDE_PROXY_ACTIVE=1
 # macOS Terminal.app: /etc/zshrc sources /etc/zshrc_Apple_Terminal (ZDOTDIR
 # does not stop that), which prints "Restored session: ..." on start and
 # "Saving session..." on exit of every interactive zsh -- breaking every
@@ -271,7 +274,7 @@ rm -f "$STATE/$PANE3"
 
 # stale record
 printf 'sid-o\t%s\t1\t\n' "$PROJ" > "$STATE/$PANE3"
-o=$(zrun "$PANE3" "WARP_CLAUDE_AUTO=1")
+o=$(zrun "$PANE3" "WARP_CLAUDE_AUTO=1; WARP_CLAUDE_MAX_AGE=604800")
 is "record older than MAX_AGE is ignored" "$o" ""
 o=$(zsh -ic "export WARP_CLAUDE_STATE_DIR='$STATE'
 export WARP_TERMINAL_SESSION_UUID='$PANE3'

@@ -1,5 +1,54 @@
 # warp-claude-resume
 
+## Persistent-session fork
+
+This fork is based on upstream commit
+`8f40af59f4e0bfdaf518b61a43f0caada12a949c`. It adds:
+
+- No age cutoff by default: `WARP_CLAUDE_MAX_AGE=0` means indefinite retention.
+- Private, local transcript archives for verified pane bindings. An idle
+  conversation can be restored after Claude's ordinary transcript cleanup.
+- Native background-session restoration with `claude attach <job-id>` instead
+  of launching a second process with `--resume`.
+- Background hooks update verified job attachments and cannot overwrite the
+  spawning pane using an inherited Warp UUID.
+- A transparent PTY relay observes official Warp/Claude notification IDs from
+  each actual display pane for future launches and conversation switches.
+
+The fork requires Python 3.9+ in addition to zsh. Install `session_store.py`
+and `terminal_proxy.py` alongside the two upstream scripts. Source the shell
+integration after PATH configuration, and use `WARP_CLAUDE_AUTO=1` and
+`WARP_CLAUDE_MAX_AGE=0`. A local maintenance task can run
+`python3 ~/.warp-claude/session_store.py maintain` every minute to protect
+already bound conversations without requiring agent interaction.
+
+Run both test suites:
+
+```sh
+bash test.sh
+python3 -m unittest discover -s tests -v
+```
+
+Existing foreground sessions can be imported from Claude's process metadata.
+Already running native background clients need a verified initial mapping
+between their display pane and job. Their inherited environment is not evidence
+of that mapping. The fork never guesses using folder names, timestamps, or the
+newest conversation. New sessions launched through the relay are captured from
+their own terminal stream. A missing mapping must be resolved before claiming
+complete coverage of an existing workspace.
+
+All state and archives stay under `WARP_CLAUDE_STATE_DIR`, with directory mode
+0700 and file mode 0600. No external network calls, credential reads, automatic
+code updates, or permission-bypass flags are added. On resume, protection refreshes
+the modification time of that conversation's original transcript so startup
+cleanup cannot delete the conversation being resumed. Maintenance preserves the
+original timestamps. No project files or Warp databases are modified.
+
+### Upstream documentation
+
+The text below describes the original two-script implementation. Its seven-day
+default and lack of transcript archives are superseded by the fork above.
+
 **Warp restores your panes after a restart, but the Claude Code sessions running
 in them are gone.** This brings each pane back to **its own** conversation — not
 "the newest one in this directory". Two panes open on the same repo come back to

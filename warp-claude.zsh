@@ -23,7 +23,7 @@
 #         alias here, e.g.
 #             WARP_CLAUDE_RESUME_FLAGS=(--permission-mode bypassPermissions)
 #         Must be an array. A plain string is rejected with a warning.
-#   WARP_CLAUDE_MAX_AGE   seconds; ignore records older than this. Default 7d.
+#   WARP_CLAUDE_MAX_AGE   seconds; 0 keeps records indefinitely (the default).
 #   WARP_CLAUDE_AUTO      1 = resume without asking. Default 0 (prompt).
 #   WARP_CLAUDE_DISABLE   1 = turn the whole thing off.
 #   WARP_CLAUDE_DETAILS   1 = under the prompt, show the session's title,
@@ -39,7 +39,7 @@
 # default containing [ would be globbed and abort the source.
 : "${WARP_CLAUDE_STATE_DIR:=$HOME/.warp-claude/panes}"
 export WARP_CLAUDE_STATE_DIR
-: ${WARP_CLAUDE_MAX_AGE:=604800}
+: ${WARP_CLAUDE_MAX_AGE:=0}
 : ${WARP_CLAUDE_AUTO:=0}
 : ${WARP_CLAUDE_DISABLE:=0}
 : ${WARP_CLAUDE_DETAILS:=1}
@@ -292,7 +292,7 @@ _warp_claude_reattach() {
 
   local now=$EPOCHSECONDS
   [[ -n $now ]] || now=$(date +%s)
-  if [[ $force != force ]]; then
+  if [[ $force != force && $WARP_CLAUDE_MAX_AGE != 0 ]]; then
     (( now - ts < WARP_CLAUDE_MAX_AGE )) || return 0
   fi
 
@@ -383,7 +383,12 @@ _warp_claude_reattach() {
   }
 
   local rc=0
-  WARP_CLAUDE_ACTIVE=1 "$bin" "${extra_args[@]}" --resume "$sid" || rc=$?
+  local helper="${WARP_CLAUDE_HELPER:-$HOME/.warp-claude/session_store.py}"
+  if [[ -f $helper && -x ${commands[python3]:-} ]]; then
+    WARP_CLAUDE_ACTIVE=1 "${commands[python3]}" "$helper" restore --pane "$pane" --binary "$bin" -- "${extra_args[@]}" || rc=$?
+  else
+    WARP_CLAUDE_ACTIVE=1 "$bin" "${extra_args[@]}" --resume "$sid" || rc=$?
+  fi
   # 130 is Ctrl-C, 1 is often a normal quit. Only a clear failure to start is
   # worth commenting on, and even then don't assert why.
   if (( rc != 0 && rc != 130 && rc != 1 )); then
@@ -409,4 +414,22 @@ if [[ $WARP_CLAUDE_DISABLE != 1 && -o interactive \
   typeset -g WARP_CLAUDE_RAN=1          # shell-scoped: survives a second source
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd _warp_claude_precmd
+fi
+
+# Observe future foreground terminal streams so native background attachments
+# are associated with their display pane rather than their spawning pane.
+if [[ -o interactive && -n ${WARP_TERMINAL_SESSION_UUID:-} \
+      && -z ${WARP_CLAUDE_PROXY_ACTIVE:-} && $WARP_CLAUDE_DISABLE != 1 \
+      && -z ${functions[claude]:-} && -z ${aliases[claude]:-} \
+      && -f "$HOME/.warp-claude/terminal_proxy.py" && -x ${commands[python3]:-} ]]; then
+  function claude() {
+    local bin=${commands[claude]:-}
+    [[ $bin == /* && -x $bin ]] || { print -u2 -- 'warp-claude: claude executable not found'; return 127; }
+    if [[ -t 0 && -t 1 && -z ${WARP_CLAUDE_PROXY_ACTIVE:-} && $WARP_CLAUDE_DISABLE != 1 ]]; then
+      "${commands[python3]}" "$HOME/.warp-claude/terminal_proxy.py" \
+        --pane "$WARP_TERMINAL_SESSION_UUID" -- "$bin" "$@"
+    else
+      "$bin" "$@"
+    fi
+  }
 fi
