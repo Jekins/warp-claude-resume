@@ -98,6 +98,22 @@ is "record has 4 tab-separated fields" \
    "$(awk -F'\t' '{print NF}' "$STATE/$PANE1")" "4"
 is "state dir is 0700" "$(ls -ld "$STATE" | cut -c2-10)" "rwx------"
 
+# SessionStart also fires on compact, and by then Claude's cwd may have drifted
+# (a `cd` in a Bash tool call carries over). Recording it re-keyed a resumed
+# session onto the wrong project folder (seen live, Oct 2026). Compact keeps
+# the pane's recorded cwd; startup/resume/clear still set it.
+echo; echo "recording: compact keeps the launch directory"
+hook "$PANE3" "{\"session_id\":\"sess-c\",\"cwd\":\"$PROJ\",\"source\":\"startup\"}"
+hook "$PANE3" "{\"session_id\":\"sess-c\",\"cwd\":\"$T/empty\",\"source\":\"compact\"}"
+is "compact does not overwrite cwd" "$(cut -f2 "$STATE/$PANE3")" "$PROJ"
+hook "$PANE3" "{\"session_id\":\"sess-d\",\"cwd\":\"$T/empty\",\"source\":\"resume\"}"
+is "resume sets cwd" "$(cut -f2 "$STATE/$PANE3")" "$T/empty"
+is "resume sets sid" "$(cut -f1 "$STATE/$PANE3")" "sess-d"
+rm -f "$STATE/$PANE3"
+hook "$PANE3" "{\"session_id\":\"sess-e\",\"cwd\":\"$PROJ\",\"source\":\"compact\"}"
+is "compact with no prior record writes normally" "$(cut -f2 "$STATE/$PANE3")" "$PROJ"
+rm -f "$STATE/$PANE3"
+
 # ------------------------------------------------- THE core requirement
 echo; echo "core: per-pane identity"
 o1=$(zrun "$PANE1" "WARP_CLAUDE_AUTO=1")
@@ -340,6 +356,11 @@ hasnt "last line omitted when it equals the title" "$o" "last:"
 o=$(dz sess-0002 "export PATH='$NOPY'")
 has   "without working python3, still shows age and size" "$o" "1 KB"
 
+# ------------------------------------------------------------------ OSC 7
+echo; echo "directory report"
+o=$(zsh -fc "source '$ZSHLIB'; HOST=h; _warp_claude_osc7 '/a b/100%/é'" | od -An -c | tr -d ' \n')
+is "OSC 7 path is percent-encoded byte by byte" "$o" '033]7;file://h/a%20b/100%25/%C3%A9\a'
+
 # ---------------------------------------------------------------- pty tests
 echo; echo "interactive (pty)"
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import pty' 2>/dev/null; then
@@ -436,6 +457,9 @@ source '$ZSHLIB'"
   o=$(python3 "$T/ptyh.py" "$T/rcD/.zshrc" "$(printf '\n')" 2>&1)
   has "bare enter accepts" "$o" "CLAUDE argc"
   has "accepting cds into the recorded directory" "$o" "CLAUDE cwd=$PROJ"
+  # Warp's own precmd runs after ours, so without this report Warp never
+  # learns the pane's directory and restores it (and its file explorer) at ~.
+  has "accepting reports the directory to the terminal (OSC 7)" "$o" "]7;file://"
 else
   sk "interactive prompt tests" "python3 with pty module not available"
 fi
