@@ -13,7 +13,10 @@ test. Read the comment before changing the code.
 |---|---|
 | `record-session.sh` | Claude Code `SessionStart` hook. POSIX sh. Writes a pane→session record. |
 | `warp-claude.zsh` | Sourced from `.zshrc`. Registers a one-shot `precmd` hook that offers to resume. |
+| `session_store.py`, `terminal_proxy.py` | Fork: pane bindings, transcript archives, PTY relay. |
+| `install.sh` | One-command install/update/uninstall; must stay idempotent. |
 | `test.sh` | Regression suite. 90 checks. Run after every edit. |
+| `tests/` | Fork suites, incl. `test_install.py`. |
 | `README.md` | User-facing docs |
 | `LICENSE` | MIT |
 
@@ -21,6 +24,7 @@ test. Read the comment before changing the code.
 
 ```sh
 bash test.sh        # must be 90/90 (89 + 1 skip when run as root) before and after any change
+python3 -m unittest discover -s tests
 ```
 
 The suite runs in a temp directory with a stubbed `claude` and touches nothing

@@ -1,9 +1,60 @@
 # warp-claude-resume
 
-## Persistent-session fork
+**Warp restores your panes after a restart, but the Claude Code sessions in
+them are gone.** This brings each pane back to its own conversation. This fork
+also keeps idle conversations restorable indefinitely and reattaches background
+sessions.
 
-This fork is based on upstream commit
-`8f40af59f4e0bfdaf518b61a43f0caada12a949c`. It adds:
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jekins/warp-claude-resume/persistent-open-sessions/install.sh | bash
+```
+
+Then turn on *Restore windows, tabs, and panes on startup* in Warp's settings
+and open a new tab. Claude Code sessions started from then on come back in
+their own pane after Warp restarts.
+
+Needs macOS or Linux, zsh, git, Python 3.9+ (on macOS: `xcode-select --install`)
+and Claude Code.
+
+The installer:
+
+- copies four scripts to `~/.warp-claude/`;
+- adds one `SessionStart` hook to `~/.claude/settings.json`, keeping every other
+  key and hook;
+- adds a marked block to `~/.zshrc` that sources the shell integration;
+- on macOS, loads a launchd agent (`dev.warp-claude.resume-maintenance`) that
+  runs `session_store.py maintain` every minute; on Linux it prints the crontab
+  line instead.
+
+A re-run changes nothing when everything is current, and every file it replaces
+is copied to `~/.warp-claude/backups/<timestamp>/` first. Run the same command
+again to update.
+
+Options go after `bash -s --`:
+
+| Option | Does |
+|---|---|
+| `--auto` | resume a restored pane without asking (`WARP_CLAUDE_AUTO=1`) |
+| `--test` | run both test suites before installing |
+| `--uninstall` | remove the hook, the `.zshrc` block and the agent; keeps `~/.warp-claude` |
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jekins/warp-claude-resume/persistent-open-sessions/install.sh | bash -s -- --auto
+```
+
+From a clone: `git clone https://github.com/Jekins/warp-claude-resume && bash warp-claude-resume/install.sh`.
+
+If you launch Claude with flags (for example an alias with `--permission-mode`),
+put them in `WARP_CLAUDE_RESUME_FLAGS` in `~/.zshrc`, above the `source` line,
+so restored panes match. See [Using it](#using-it).
+
+## What this fork adds
+
+This fork tracks
+[supersistence/warp-claude-resume](https://github.com/supersistence/warp-claude-resume)
+and adds:
 
 - No age cutoff by default: `WARP_CLAUDE_MAX_AGE=0` means indefinite retention.
 - Private, local transcript archives for verified pane bindings. An idle
@@ -15,12 +66,9 @@ This fork is based on upstream commit
 - A transparent PTY relay observes official Warp/Claude notification IDs from
   each actual display pane for future launches and conversation switches.
 
-The fork requires Python 3.9+ in addition to zsh. Install `session_store.py`
-and `terminal_proxy.py` alongside the two upstream scripts. Source the shell
-integration after PATH configuration, and use `WARP_CLAUDE_AUTO=1` and
-`WARP_CLAUDE_MAX_AGE=0`. A local maintenance task can run
-`python3 ~/.warp-claude/session_store.py maintain` every minute to protect
-already bound conversations without requiring agent interaction.
+The maintenance agent runs `python3 ~/.warp-claude/session_store.py maintain`
+every minute to protect already bound conversations without requiring agent
+interaction.
 
 Run both test suites:
 
@@ -93,30 +141,16 @@ you run `claude --resume` in them.
 - **Claude Code** with `SessionStart` hook support
 - macOS or Linux. WSL should work but is untested. Panes over SSH never resume.
 
-## Install
+## Manual install
+
+What [`install.sh`](install.sh) does, if you'd rather do it by hand:
 
 ```sh
-git clone https://github.com/supersistence/warp-claude-resume
-cd warp-claude-resume
-claude
-```
-
-Then tell Claude Code:
-
-> Read README.md and install this. Merge the hook into my existing
-> `~/.claude/settings.json` without overwriting other keys, and if I have a
-> `claude` alias with flags, mirror them in `WARP_CLAUDE_RESUME_FLAGS`.
-
-That's the whole install. The steps it performs are below — read them if you
-want to see exactly what touches your config, or to do it by hand.
-
-### Manual steps
-
-```sh
-bash test.sh          # optional, ~30s, touches nothing in $HOME
-mkdir -p ~/.warp-claude
-cp record-session.sh warp-claude.zsh ~/.warp-claude/
-chmod +x ~/.warp-claude/record-session.sh
+git clone https://github.com/Jekins/warp-claude-resume && cd warp-claude-resume
+bash test.sh && python3 -m unittest discover -s tests   # optional, touches nothing in $HOME
+mkdir -p ~/.warp-claude && chmod 700 ~/.warp-claude
+cp record-session.sh warp-claude.zsh session_store.py terminal_proxy.py ~/.warp-claude/
+chmod 700 ~/.warp-claude/record-session.sh
 ```
 
 Add the hook to `~/.claude/settings.json`, merging with any existing keys:
@@ -125,7 +159,7 @@ Add the hook to `~/.claude/settings.json`, merging with any existing keys:
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "$HOME/.warp-claude/record-session.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "\"$HOME/.warp-claude/record-session.sh\"", "timeout": 10 } ] }
     ]
   }
 }
@@ -134,8 +168,14 @@ Add the hook to `~/.claude/settings.json`, merging with any existing keys:
 Add to `~/.zshrc`, after your prompt framework and `PATH` setup:
 
 ```sh
-source ~/.warp-claude/warp-claude.zsh
+source "$HOME/.warp-claude/warp-claude.zsh"
 ```
+
+Keep idle conversations archived by running
+`python3 ~/.warp-claude/session_store.py maintain` every 60 seconds: on macOS
+`install.sh` writes a launchd agent to
+`~/Library/LaunchAgents/dev.warp-claude.resume-maintenance.plist`; on Linux add
+a crontab line.
 
 Optional knobs go on the lines *above* the `source`. These are off by default;
 uncomment deliberately — together they relaunch every restored pane with
@@ -188,7 +228,7 @@ Variables, set in `.zshrc` before the `source` line:
 |---|---|---|
 | `WARP_CLAUDE_RESUME_FLAGS` | `()` | zsh **array** of flags passed on every resume. A plain string is rejected with a warning and ignored. |
 | `WARP_CLAUDE_AUTO` | `0` | `1` = resume without asking |
-| `WARP_CLAUDE_MAX_AGE` | `604800` | seconds. Don't offer if Claude last started or resumed in this pane longer ago than this (7 days). Resuming refreshes it. |
+| `WARP_CLAUDE_MAX_AGE` | `0` | seconds. Don't offer if Claude last started or resumed in this pane longer ago than this; `0` never expires. Resuming refreshes it. |
 | `WARP_CLAUDE_DISABLE` | `0` | `1` = off |
 | `WARP_CLAUDE_DETAILS` | `1` | `0` = don't show the session's title, age and last message under the prompt |
 | `WARP_CLAUDE_TRANSCRIPT_DIR` | `${CLAUDE_CONFIG_DIR:-~/.claude}/projects` | where to find Claude Code transcripts for those details |
@@ -243,8 +283,9 @@ yourself:
   lines, runs in your shell, reads that file and, for the prompt details,
   the session's transcript). No network, no `sudo`, no
   `eval` of anything but `shlex.quote`d output, nothing deleted automatically.
-- **It writes exactly three things:** `~/.warp-claude/`, one hook entry in
-  `~/.claude/settings.json`, and lines you add to `~/.zshrc`. It reads one
+- **It writes exactly four things:** `~/.warp-claude/`, one hook entry in
+  `~/.claude/settings.json`, lines in `~/.zshrc`, and on macOS one launchd
+  agent in `~/Library/LaunchAgents/`. It reads one
   more: the transcript in `~/.claude/projects/` for the session it offers.
 - **`bash test.sh`** — 90 checks in a temp dir that never touches `$HOME`,
   including the attacks below (record tampering, flag injection, `$(…)` in a
@@ -287,13 +328,24 @@ machine tampers with it. Everything in it is validated before use:
 
 ## Uninstall
 
-Nothing here touches Warp's own files or database. To disable instantly, add
-`WARP_CLAUDE_DISABLE=1` above the `source` line. To remove:
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jekins/warp-claude-resume/persistent-open-sessions/install.sh | bash -s -- --uninstall
+```
+
+This removes the hook, the `.zshrc` block and the launchd agent, and keeps
+`~/.warp-claude` with the archived conversations; delete it with
+`rm -rf ~/.warp-claude`. Nothing here touches Warp's own files or database.
+To disable instantly instead, add `WARP_CLAUDE_DISABLE=1` above the `source`
+line.
+
+By hand:
 
 1. Delete the `WARP_CLAUDE_*` and `source` lines from `~/.zshrc`.
 2. Remove the `SessionStart` entry from `~/.claude/settings.json` (check it's
    still valid JSON: `jq . ~/.claude/settings.json`).
-3. `rm -rf ~/.warp-claude`
+3. macOS: `launchctl bootout gui/$(id -u)/dev.warp-claude.resume-maintenance`
+   and delete `~/Library/LaunchAgents/dev.warp-claude.resume-maintenance.plist`.
+4. `rm -rf ~/.warp-claude`
 
 Your conversations live in `~/.claude/projects/` and are unaffected.
 
