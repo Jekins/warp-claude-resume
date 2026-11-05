@@ -193,10 +193,21 @@ class Store:
                 return path.parent.name
         return None
 
+    def recorded_cwd(self, pane):
+        # The pane record, not metadata: warp-claude-forget removes only the record.
+        try:
+            cwd = (self.state / pane).read_text().split("\t")[1]
+        except (OSError, IndexError):
+            return None
+        return cwd if valid_path(cwd) else None
+
     def record_event(self, pane, payload, origin="hook", background=False):
         sid, cwd = payload.get("session_id"), payload.get("cwd")
         if not isinstance(sid, str) or not SESSION.fullmatch(sid) or not valid_path(cwd):
             return None
+        # On compact the payload cwd is wherever Claude's shell drifted, not the
+        # launch directory; only startup/resume/clear may move a binding.
+        compact = payload.get("source") == "compact"
         job = self.job_for_session(sid)
         if background:
             # A background worker inherits its launcher's Warp UUID. Update only
@@ -206,8 +217,11 @@ class Store:
                 job = job_env
             for binding in self.bindings():
                 if job and binding.get("job_id") == job:
-                    self.bind(binding["pane"], sid, cwd, "attach", job, "background-hook")
+                    self.bind(binding["pane"], sid, binding["cwd"] if compact else cwd,
+                              "attach", job, "background-hook")
             return None
+        if compact:
+            cwd = self.recorded_cwd(pane) or cwd
         return self.bind(pane, sid, cwd, "attach" if job else "resume", job, origin)
 
     def maintain(self):

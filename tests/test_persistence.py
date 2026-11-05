@@ -113,6 +113,27 @@ class PersistenceTests(PersistenceFixture, unittest.TestCase):
         self.assertEqual(self.store.restore_command(PANE1, str(self.binary))[1][-1], SID1)
         self.assertEqual(self.store.restore_command(PANE2, str(self.binary))[1][-1], SID2)
 
+    def test_compact_keeps_the_recorded_launch_directory(self):
+        self.transcript(SID1)
+        drifted = self.root / "drifted"
+        drifted.mkdir()
+        self.store.record_event(PANE1, {"session_id": SID1, "cwd": str(self.cwd), "source": "startup"})
+        self.store.record_event(PANE1, {"session_id": SID1, "cwd": str(drifted), "source": "compact"})
+        self.assertEqual(read_json(self.store.metadata_path(PANE1))["cwd"], str(self.cwd))
+        self.store.record_event(PANE1, {"session_id": SID1, "cwd": str(drifted), "source": "resume"})
+        self.assertEqual(read_json(self.store.metadata_path(PANE1))["cwd"], str(drifted))
+
+    def test_background_compact_keeps_the_attachment_directory(self):
+        self.transcript(SID1)
+        self.job()
+        self.bind(PANE2, SID1, "aabbccdd")
+        drifted = self.root / "drifted"
+        drifted.mkdir()
+        with patch.dict(os.environ, {"CLAUDE_JOB_DIR": str(self.config / "jobs" / "aabbccdd")}):
+            self.store.record_event(PANE1, {"session_id": SID1, "cwd": str(drifted), "source": "compact"},
+                                    background=True)
+        self.assertEqual(read_json(self.store.metadata_path(PANE2))["cwd"], str(self.cwd))
+
     def test_background_hook_does_not_overwrite_inherited_pane(self):
         self.transcript(SID1)
         self.transcript(SID2)

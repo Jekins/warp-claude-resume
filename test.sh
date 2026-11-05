@@ -28,6 +28,9 @@ export ZDOTDIR="$T/zdot"; mkdir -p "$ZDOTDIR"; : > "$ZDOTDIR/.zshrc"
 # resumed claude session inherits WARP_CLAUDE_ACTIVE=1, which (correctly)
 # makes every reattach a silent no-op.
 unset WARP_CLAUDE_ACTIVE WARP_CLAUDE_RAN WARP_CLAUDE_AUTO WARP_CLAUDE_DISABLE
+# Run from a background Claude session, these make the hook treat every
+# recording as a background worker's and write nothing.
+unset CLAUDE_JOB_DIR CLAUDE_BG_BACKEND CLAUDE_CODE_SESSION_KIND
 # Exercise the upstream compatibility path independently of any installed fork.
 export WARP_CLAUDE_HELPER=/nonexistent
 export WARP_CLAUDE_PROXY_ACTIVE=1
